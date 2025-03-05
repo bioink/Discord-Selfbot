@@ -79,11 +79,11 @@ This bot is for educational purposes only. Using selfbots on Discord violates th
    ```
 
 3. Add your bot token:
-   Open `bot.py` and replace `put_your_token_here` with your Discord token.
+   Open `main.py` and replace `TOKEN OVER HERE` with your Discord token.
 
 4. Run the selfbot:
    ```bash
-   python bot.py
+   python main.py
    ```
 
 5. Use the commands as mentioned in the features section!
