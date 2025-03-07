@@ -1,7 +1,14 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import requests
 import asyncio
+import aiohttp 
+import itertools
+import pytz
+from datetime import datetime
+import nacl
+print(pytz.all_timezones)
+
 
 prefix = ','
 
@@ -23,7 +30,7 @@ async def on_ready():
 async def help(ctx):
     """Show a list of available commands."""
     help_text = """
-**Bioinks SelfBot Menu**
+**The Help Menu**
 
 **General Commands:**
 `ping` - Test command to check if the bot is active.
@@ -56,6 +63,8 @@ async def help(ctx):
 """
     await ctx.send(f"```{help_text}```")
 
+react_users = {}
+
 @bot.command()
 async def sr(ctx, user_id: int, *emojis):
     """Start reacting to a user's messages with specified emojis."""
@@ -65,7 +74,7 @@ async def sr(ctx, user_id: int, *emojis):
     react_users[user_id] = emojis
     await ctx.send(f"```Started reacting to messages from user ID: {user_id} with emojis: {' '.join(emojis)}```")
 
-@bot.command()
+@bot.command(name='srs')
 async def srs(ctx, user_id: int):
     """Stop reacting to a user's messages."""
     if user_id in react_users:
@@ -73,6 +82,271 @@ async def srs(ctx, user_id: int):
         await ctx.send(f"```Stopped reacting to messages from user ID: {user_id}```")
     else:
         await ctx.send(f"```No reactions were set for user ID: {user_id}```")
+
+@bot.event
+async def on_message(message):
+    """React to messages for users in the react_users dictionary."""
+    if message.author.id in react_users:
+        emojis = react_users[message.author.id]
+        for emoji in emojis:
+            try:
+                await message.add_reaction(emoji)
+            except discord.Forbidden:
+                print(f"Unable to react with {emoji} due to insufficient permissions.")
+            except discord.HTTPException:
+                print(f"Failed to react with {emoji} due to an HTTP error.")
+    await bot.process_commands(message)
+
+sniped_messages = {}
+sniped_reactions = {}
+sniped_edits = {}
+
+@bot.event
+async def on_message_delete(message):
+    """Stores the last deleted message in a channel."""
+    if not message.author.bot:
+        sniped_messages[message.channel.id] = {
+            "author": str(message.author),
+            "content": message.content or "Embedded content/attachment",
+            "time": message.created_at
+        }
+
+@bot.command(name='snipe')
+async def snipe(ctx):
+    """Snipes the last deleted message in the channel."""
+    channel_id = ctx.channel.id
+    if channel_id in sniped_messages:
+        msg = sniped_messages[channel_id]
+        await ctx.send(
+            f"**Author:** {msg['author']}\n"
+            f"**Time:** {msg['time']}\n"
+            f"**Message:** {msg['content']}"
+        )
+    else:
+        await ctx.send("```There's nothing to snipe in this channel```")
+
+@bot.event
+async def on_reaction_remove(reaction, user):
+    """Stores the last removed reaction in a channel."""
+    if not user.bot:
+        sniped_reactions[reaction.message.channel.id] = {
+            "message": reaction.message.content,
+            "emoji": str(reaction.emoji),
+            "user": str(user),
+            "time": reaction.message.created_at
+        }
+
+@bot.command(name='rs')
+async def reaction_snipe(ctx):
+    """Snipes the last removed reaction in the channel."""
+    channel_id = ctx.channel.id
+    if channel_id in sniped_reactions:
+        react = sniped_reactions[channel_id]
+        await ctx.send(
+            f"**User:** {react['user']}\n"
+            f"**Time:** {react['time']}\n"
+            f"**Message:** {react['message']}\n"
+            f"**Reaction Removed:** {react['emoji']}"
+        )
+    else:
+        await ctx.send("```There's no reaction to snipe in this channel```")
+
+@bot.event
+async def on_message_edit(before, after):
+    """Stores the last edited message in a channel."""
+    if not before.author.bot:
+        sniped_edits[before.channel.id] = {
+            "author": str(before.author),
+            "before": before.content or "Embedded content/attachment",
+            "after": after.content or "Embedded content/attachment",
+            "time": before.created_at
+        }
+
+@bot.command(name='es')
+async def edit_snipe(ctx):
+    """Snipes the last edited message in the channel."""
+    channel_id = ctx.channel.id
+    if channel_id in sniped_edits:
+        edit = sniped_edits[channel_id]
+        await ctx.send(
+            f"**Author:** {edit['author']}\n"
+            f"**Time:** {edit['time']}\n"
+            f"**Before:** {edit['before']}\n"
+            f"**After:** {edit['after']}"
+        )
+    else:
+        await ctx.send("```There's no edited message to snipe in this channel```")
+
+@bot.command()
+async def userinfo(ctx, member: discord.Member = None):
+    """Get information about a user."""
+    member = member or ctx.author
+    name = member.name
+    id = member.id
+    joined_at = member.joined_at.strftime('%Y-%m-%d %H:%M:%S')
+    roles = [role.name for role in member.roles]
+    await ctx.send(f"User Name: ```{name}```\nUser ID: ```{id}```\nJoined At: ```{joined_at}```\nRoles: {', '.join(roles)}")
+
+
+status_list = itertools.cycle(["👋🏼", "⭐", "😱", "🙏"])
+
+@tasks.loop(seconds=5)
+async def change_status():
+    current_status = next(status_list)
+    await bot.change_presence(activity=discord.Game(name=current_status))
+
+@bot.command(name='statuschange')
+async def start_status(ctx):
+    if not change_status.is_running():
+        change_status.start()
+        await ctx.send("Started changing statuses every 5 seconds.")
+
+@bot.command(name='stopstatus')
+async def stop_status(ctx):
+    if change_status.is_running():
+        change_status.stop()
+        await ctx.send("Stopped changing statuses.")
+
+@bot.command(name='copyserver')
+async def copyserver(ctx, source_server_id: int, target_server_id: int):
+    source_server = bot.get_guild(source_server_id)
+    target_server = bot.get_guild(target_server_id)
+
+    if not source_server:
+        await ctx.send(f"```Source server with ID {source_server_id} not found```")
+        return
+
+    if not target_server:
+        await ctx.send(f"```Target server with ID {target_server_id} not found```")
+        return
+
+    await ctx.send(f"```Starting to copy server structure from {source_server.name} to {target_server.name}. This may take some time...```")
+
+    try:
+        await target_server.edit(name=source_server.name)
+        if source_server.icon:
+            icon_bytes = await source_server.icon.read()
+            await target_server.edit(icon=icon_bytes)
+    except Exception as e:
+        await ctx.send(f"```Failed to update server name or icon: {e}```")
+
+    for channel in target_server.channels:
+        try:
+            await channel.delete()
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"```Could not delete channel {channel.name}: {e}```")
+
+    for role in source_server.roles[::-1]:
+        if role.is_default():
+            continue
+        try:
+            await target_server.create_role(
+                name=role.name,
+                permissions=role.permissions,
+                color=role.color,
+                hoist=role.hoist,
+                mentionable=role.mentionable
+            )
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"```Could not copy role {role.name}: {e}```")
+
+    for category in source_server.categories:
+        try:
+            new_category = await target_server.create_category(
+                name=category.name,
+                overwrites=category.overwrites
+            )
+            await asyncio.sleep(1)
+            for channel in category.channels:
+                if isinstance(channel, discord.TextChannel):
+                    await new_category.create_text_channel(
+                        name=channel.name,
+                        topic=channel.topic,
+                        nsfw=channel.nsfw,
+                        slowmode_delay=channel.slowmode_delay
+                    )
+                elif isinstance(channel, discord.VoiceChannel):
+                    await new_category.create_voice_channel(
+                        name=channel.name,
+                        bitrate=channel.bitrate,
+                        user_limit=channel.user_limit
+                    )
+                await asyncio.sleep(1)
+        except Exception as e:
+            print(f"```Could not copy category {category.name}: {e}```")
+
+    await ctx.send("```Server copy complete```")
+
+@bot.command(name='time')
+async def time(ctx, *, country: str):
+    country_to_timezone = {
+        "uae": "Asia/Dubai",
+        "italy": "Europe/Rome",
+        "usa": "America/New_York",
+        "india": "Asia/Kolkata",
+        "japan": "Asia/Tokyo",
+        "china": "Asia/Shanghai",
+        "australia": "Australia/Sydney",
+        "canada": "America/Toronto",
+        "brazil": "America/Sao_Paulo",
+        "south africa": "Africa/Johannesburg",
+        "germany": "Europe/Berlin",
+        "france": "Europe/Paris",
+        "mexico": "America/Mexico_City",
+        "russia": "Europe/Moscow",
+        "uk": "Europe/London",
+        "saudi arabia": "Asia/Riyadh",
+        "argentina": "America/Argentina/Buenos_Aires",
+        "egypt": "Africa/Cairo",
+        "thailand": "Asia/Bangkok",
+        "south korea": "Asia/Seoul",
+        "new zealand": "Pacific/Auckland",
+        "spain": "Europe/Madrid",
+        "pakistan": "Asia/Karachi",
+        "singapore": "Asia/Singapore",
+    }
+
+    country = country.lower()
+
+    if country in country_to_timezone:
+        timezone = pytz.timezone(country_to_timezone[country])
+        current_time = datetime.now(timezone).strftime('%Y-%m-%d %H:%M:%S')
+        await ctx.send(f"```Current time in {country.title()} is {current_time}```")
+    else:
+        await ctx.send(f"```Sorry, I don't recognize the country '{country}'. Please make sure it's in the list or add it to the dictionary.```")
+
+
+@bot.command(name='status')
+async def set_status(ctx, *, status: str):
+    """
+    Set your Discord status to DND, Online, Idle, Offline, or Mobile.
+    Usage: ,status <dnd|online|idle|offline|mobile>
+    """
+    status = status.lower()
+
+    try:
+        if status == "dnd":
+            await bot.change_presence(status=discord.Status.dnd)
+            await ctx.send("```Your status has been set to Do Not Disturb (DND).```")
+        elif status == "online":
+            await bot.change_presence(status=discord.Status.online)
+            await ctx.send("```Your status has been set to Online.```")
+        elif status == "idle":
+            await bot.change_presence(status=discord.Status.idle)
+            await ctx.send("```Your status has been set to Idle.```")
+        elif status == "offline":
+            await bot.change_presence(status=discord.Status.offline)
+            await ctx.send("```Your status has been set to Offline (Invisible).```")
+        elif status == "mobile":
+            mobile_activity = discord.Activity(type=discord.ActivityType.custom, name="\U0001f4f1")
+            await bot.change_presence(status=discord.Status.online, activity=mobile_activity)
+            await ctx.send("```Your status has been set to Mobile (📱).```")
+        else:
+            await ctx.send("```Invalid status. Use dnd, online, idle, offline, or mobile.```")
+    except Exception as e:
+        await ctx.send(f"```Failed to set status. Error: {e}```")
 
 @bot.command()
 async def afk(ctx, *, message="I am currently AFK."):
@@ -83,7 +357,7 @@ async def afk(ctx, *, message="I am currently AFK."):
 @bot.command()
 async def streaming(ctx, *, activity: str):
     """Set streaming status with the specified activity."""
-    streaming_activity = discord.Streaming(name=activity, url="https://twitch.tv/placeholder")
+    streaming_activity = discord.Streaming(name=activity, url="https://twitch.tv/r3alwyldstyl3")
     await bot.change_presence(activity=streaming_activity)
     await ctx.send(f"```Set your status to: Streaming {activity}```")
 
@@ -244,6 +518,56 @@ async def leave_vc(ctx):
     except Exception as e:
         await ctx.send()
 
+@bot.command(name='delete')
+async def delete(ctx, amount: int):
+    """
+    Deletes the specified number of your recent messages.
+    Usage: ,delete <amount>
+    """
+    if amount < 1:
+        await ctx.send("```Please specify a valid number of messages to delete.```")
+        return
+
+    await ctx.message.delete()
+    deleted = 0
+
+    async for message in ctx.channel.history(limit=500):
+        if message.author.id == bot.user.id:
+            await message.delete()
+            deleted += 1
+            if deleted >= amount:
+                break
+
+    await ctx.send(f"```Deleted {deleted} messages.```", delete_after=5)
+
+
+import aiohttp
+
+@bot.command(name='setpfp')
+async def set_pfp(ctx, image_url: str):
+    """
+    Changes your profile picture.
+    Usage: ,setpfp <image_url>
+    """
+    await ctx.message.delete()
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as response:
+                if response.status != 200:
+                    await ctx.send("```Failed to fetch the image. Please provide a valid URL.```")
+                    return
+                
+                image_data = await response.read()
+
+        await bot.user.edit(avatar=image_data)
+        await ctx.send("```Profile picture updated successfully.```")
+    except discord.Forbidden:
+        await ctx.send("```You do not have permission to change the profile picture.```")
+    except Exception as e:
+        await ctx.send(f"```An error occurred: {e}```")
+
+
 @bot.command()
 async def ping(ctx):
     """Test command to check if the bot is active."""
@@ -275,4 +599,4 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-bot.run('TOKEN OVER HERE')
+bot.run('put token here ')
